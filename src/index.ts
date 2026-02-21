@@ -166,27 +166,51 @@ server.tool(
 
     const claudeMd = filesToClaudeMd(bundle.files, bundle.manifest);
 
-    const dir = output_dir || ".";
-    const outPath = `${dir}/CLAUDE.md`;
-
-    // Write file using Node.js fs
-    const { writeFileSync, mkdirSync, existsSync } = await import("fs");
-    const { resolve } = await import("path");
-    const resolvedDir = resolve(dir);
-    if (!existsSync(resolvedDir)) mkdirSync(resolvedDir, { recursive: true });
-    const resolvedPath = resolve(outPath);
-    writeFileSync(resolvedPath, claudeMd, "utf-8");
-
     const m = bundle.manifest;
+
+    // Try to write file, fall back to returning content
+    let writtenPath: string | null = null;
+    try {
+      const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+      const { resolve } = await import("path");
+      const dir = output_dir || ".";
+      const resolvedDir = resolve(dir);
+      if (!existsSync(resolvedDir)) mkdirSync(resolvedDir, { recursive: true });
+      writtenPath = resolve(`${dir}/CLAUDE.md`);
+      writeFileSync(writtenPath, claudeMd, "utf-8");
+    } catch {
+      writtenPath = null;
+    }
+
+    if (writtenPath) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: [
+            `✅ Installed **${m.displayName}** (${owner}/${name} v${m.version})`,
+            "",
+            `CLAUDE.md written to: \`${writtenPath}\``,
+            "",
+            "Claude will automatically read this file as project instructions.",
+            "",
+            `Files included: ${Object.keys(bundle.files).join(", ")}`,
+          ].join("\n"),
+        }],
+      };
+    }
+
+    // Fallback: return content for Claude to save via its own tools
     return {
       content: [{
         type: "text" as const,
         text: [
-          `✅ Installed **${m.displayName}** (${owner}/${name} v${m.version})`,
+          `✅ Downloaded **${m.displayName}** (${owner}/${name} v${m.version})`,
           "",
-          `CLAUDE.md written to: \`${resolvedPath}\``,
+          "I couldn't write the file directly. Please save the following as `CLAUDE.md` in your desired location:",
           "",
-          "Claude will automatically read this file as project instructions.",
+          "```markdown",
+          claudeMd,
+          "```",
           "",
           `Files included: ${Object.keys(bundle.files).join(", ")}`,
         ].join("\n"),
