@@ -73,6 +73,7 @@ server.tool(
     tag: z.string().optional().describe("Tag filter"),
     limit: z.number().optional().default(10).describe("Max results (default 10)"),
   },
+  { title: "Search Personas", readOnlyHint: true, openWorldHint: false },
   async ({ query, category, tag, limit }) => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
@@ -113,6 +114,7 @@ server.tool(
     owner: z.string().describe("Soul owner (e.g., 'TomLeeLive')"),
     name: z.string().describe("Soul name (e.g., 'brad')"),
   },
+  { title: "Get Persona Details", readOnlyHint: true, openWorldHint: false },
   async ({ owner, name }) => {
     const s = await apiGet(`/souls/${owner}/${name}`) as {
       displayName: string; description: string; category: string;
@@ -153,6 +155,7 @@ server.tool(
     name: z.string().describe("Soul name (e.g., 'brad')"),
     output_dir: z.string().optional().describe("Directory to write CLAUDE.md (default: current directory)"),
   },
+  { title: "Install Persona", readOnlyHint: false },
   async ({ owner, name, output_dir }) => {
     // Fetch bundle (includes file contents)
     const bundle = await apiGet(`/bundle/${owner}/${name}`) as {
@@ -224,6 +227,7 @@ server.tool(
   "list_categories",
   "List available soul categories on ClawSouls",
   {},
+  { title: "List Categories", readOnlyHint: true, openWorldHint: false },
   async () => {
     const categories = [
       "work/engineering — Software development, DevOps, architecture",
@@ -255,6 +259,7 @@ server.tool(
     owner: z.string().describe("Soul owner"),
     name: z.string().describe("Soul name"),
   },
+  { title: "Preview Persona", readOnlyHint: true, openWorldHint: false },
   async ({ owner, name }) => {
     const bundle = await apiGet(`/bundle/${owner}/${name}`) as {
       manifest: { displayName: string; name: string; description: string; version: string };
@@ -284,6 +289,7 @@ server.tool(
     owner: z.string().describe("Soul owner (e.g., 'TomLeeLive')"),
     name: z.string().describe("Soul name (e.g., 'brad')"),
   },
+  { title: "Apply Persona", readOnlyHint: true, openWorldHint: false },
   async ({ owner, name }) => {
     const bundle = await apiGet(`/bundle/${owner}/${name}`) as {
       manifest: { displayName: string; name: string; description: string; version: string };
