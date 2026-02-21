@@ -1,6 +1,6 @@
 {
   "name": "soul-spec-mcp",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Browse, install, and manage AI agent personas via Soul Spec. Powered by ClawSouls.",
   "type": "module",
   "main": "dist/index.js",

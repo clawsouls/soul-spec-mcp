@@ -71,7 +71,7 @@ server.tool(
     query: z.string().optional().describe("Search keyword"),
     category: z.string().optional().describe("Category filter (e.g., 'work/engineering', 'creative')"),
     tag: z.string().optional().describe("Tag filter"),
-    limit: z.number().optional().default(10).describe("Max results (default 10)"),
+    limit: z.number().optional().default(100).describe("Max results (default 100)"),
   },
   { title: "Search Personas", readOnlyHint: true, openWorldHint: false },
   async ({ query, category, tag, limit }) => {
