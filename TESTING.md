@@ -92,7 +92,7 @@ code ~/Library/Application\ Support/Claude/claude_desktop_config.json
 **기대**: MCP tool 호출되어 결과 표시
 
 ### 3-4. 설치 테스트
-> "Install the minimalist soul to my Desktop"
+> "Install TomLeeLive/brad to my Desktop"
 
 **기대**: `~/Desktop/CLAUDE.md` 생성
 
