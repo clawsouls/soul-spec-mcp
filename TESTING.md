@@ -122,14 +122,33 @@ cat ./test-soul/CLAUDE.md
 
 ---
 
-## Test 5: 에러 핸들링
+## Test 5: apply_persona (즉시 페르소나 전환)
 
-### 5-1. 존재하지 않는 soul
+### 5-1. 페르소나 적용
+> "Apply the TomLeeLive/brad persona"
+
+**기대**: Brad의 SOUL.md, IDENTITY.md, STYLE.md, AGENTS.md 내용이 출력되고, "Persona Brad is now active" 메시지
+
+### 5-2. 적용 후 동작 확인
+> "Introduce yourself"
+
+**기대**: Brad 페르소나로 응답 (formal, concise, no fluff)
+
+### 5-3. 다른 페르소나로 전환
+> "Apply clawsouls/backend-dev persona"
+
+**기대**: 새 페르소나로 전환됨
+
+---
+
+## Test 6: 에러 핸들링
+
+### 6-1. 존재하지 않는 soul
 > "Get details about nonexistent/fake-soul"
 
 **기대**: 에러 메시지 (크래시 아님)
 
-### 5-2. 빈 검색
+### 6-2. 빈 검색
 > "Search for xyznonexistent123"
 
 **기대**: "No souls found" 메시지
@@ -150,5 +169,8 @@ cat ./test-soul/CLAUDE.md
 | 3-1~3 | Claude Desktop 연동 | ⬜ |
 | 3-4 | Desktop install | ⬜ |
 | 4 | CLAUDE.md 내용 검증 | ⬜ |
-| 5-1 | 없는 soul 에러 | ⬜ |
-| 5-2 | 빈 검색 결과 | ⬜ |
+| 5-1 | apply_persona | ⬜ |
+| 5-2 | 적용 후 동작 확인 | ⬜ |
+| 5-3 | 페르소나 전환 | ⬜ |
+| 6-1 | 없는 soul 에러 | ⬜ |
+| 6-2 | 빈 검색 결과 | ⬜ |
