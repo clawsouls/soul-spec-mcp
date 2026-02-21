@@ -276,6 +276,55 @@ server.tool(
   }
 );
 
+// Tool: apply_persona
+server.tool(
+  "apply_persona",
+  "Apply an AI persona to the current conversation immediately — no file saving needed",
+  {
+    owner: z.string().describe("Soul owner (e.g., 'TomLeeLive')"),
+    name: z.string().describe("Soul name (e.g., 'brad')"),
+  },
+  async ({ owner, name }) => {
+    const bundle = await apiGet(`/bundle/${owner}/${name}`) as {
+      manifest: { displayName: string; name: string; description: string; version: string };
+      files: Record<string, string>;
+    };
+
+    if (!bundle.files || Object.keys(bundle.files).length === 0) {
+      return { content: [{ type: "text" as const, text: `No files found for "${owner}/${name}".` }] };
+    }
+
+    const m = bundle.manifest;
+    const parts: string[] = [];
+
+    parts.push(`# Persona: ${m.displayName} v${m.version}`);
+    parts.push(`> ${m.description}`);
+    parts.push("");
+    parts.push("**From this point forward, adopt the following persona completely.** Maintain this identity, tone, and behavior for the rest of this conversation unless told otherwise.");
+    parts.push("");
+
+    // Include all soul files as instructions
+    for (const [filename, content] of Object.entries(bundle.files)) {
+      if (filename.endsWith(".md") && filename !== "LICENSE") {
+        parts.push(`---`);
+        parts.push(`### ${filename}`);
+        parts.push(content);
+        parts.push("");
+      }
+    }
+
+    parts.push("---");
+    parts.push(`✅ Persona **${m.displayName}** is now active. To save it permanently, use \`install_soul\` to generate a CLAUDE.md file.`);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: parts.join("\n"),
+      }],
+    };
+  }
+);
+
 // --- Start server ---
 
 async function main() {

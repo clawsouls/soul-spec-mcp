@@ -37,7 +37,8 @@ claude mcp add soul-spec -- npx -y soul-spec-mcp
 |------|-------------|
 | `search_souls` | Search personas by keyword, category, or tag |
 | `get_soul` | Get detailed info about a specific soul |
-| `install_soul` | Download and convert to CLAUDE.md |
+| `apply_persona` | **Apply a persona to the current conversation instantly** |
+| `install_soul` | Download and convert to CLAUDE.md (permanent) |
 | `preview_soul` | Preview CLAUDE.md output without saving |
 | `list_categories` | Browse available persona categories |
 
