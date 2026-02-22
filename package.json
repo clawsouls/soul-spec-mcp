@@ -1,6 +1,6 @@
 {
   "name": "soul-spec-mcp",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Browse, install, and manage AI agent personas via Soul Spec. Powered by ClawSouls.",
   "type": "module",
   "main": "dist/index.js",
@@ -21,7 +21,9 @@
     "claude-cowork",
     "clawsouls",
     "agent-persona",
-    "ai-agent"
+    "ai-agent",
+    "chatgpt",
+    "streamable-http"
   ],
   "author": "ClawSouls <hello@clawsouls.ai>",
   "license": "MIT",

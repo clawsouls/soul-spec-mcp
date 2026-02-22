@@ -334,8 +334,51 @@ server.tool(
 // --- Start server ---
 
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const args = process.argv.slice(2);
+  const useHttp = args.includes("--http") || args.includes("--transport=http");
+  const portIdx = args.indexOf("--port");
+  const port = portIdx !== -1 ? parseInt(args[portIdx + 1], 10) : 3100;
+
+  if (useHttp) {
+    const { StreamableHTTPServerTransport } = await import(
+      "@modelcontextprotocol/sdk/server/streamableHttp.js"
+    );
+    const { createServer } = await import("node:http");
+    const { randomUUID } = await import("node:crypto");
+
+    const httpTransport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+    });
+
+    await server.connect(httpTransport);
+
+    const httpServer = createServer(async (req, res) => {
+      const url = new URL(req.url || "/", `http://localhost:${port}`);
+
+      // Only handle /mcp endpoint
+      if (url.pathname === "/mcp") {
+        await httpTransport.handleRequest(req, res);
+        return;
+      }
+
+      // Health check
+      if (url.pathname === "/health") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", transport: "streamable-http" }));
+        return;
+      }
+
+      res.writeHead(404);
+      res.end("Not Found");
+    });
+
+    httpServer.listen(port, () => {
+      console.error(`soul-spec-mcp HTTP server listening on http://localhost:${port}/mcp`);
+    });
+  } else {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  }
 }
 
 main().catch((error) => {
