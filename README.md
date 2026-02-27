@@ -70,6 +70,7 @@ Ask Claude:
 
 ## Links
 
+- [Full Documentation](https://docs.clawsouls.ai/docs/api/mcp) — Complete MCP docs
 - [Soul Spec](https://clawsouls.ai/spec) — Open specification for AI agent personas
 - [Browse Souls](https://clawsouls.ai/souls) — 80+ personas
 - [SoulScan](https://clawsouls.ai/soulscan) — Security verification for persona packages
