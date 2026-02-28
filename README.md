@@ -56,7 +56,7 @@ Soul Spec files (`SOUL.md`, `IDENTITY.md`, `STYLE.md`, `AGENTS.md`, `HEARTBEAT.m
 Ask Claude:
 
 - *"Search for creative writing personas"*
-- *"Show me details about TomLeeLive/brad"*
+- *"Show me details about clawsouls/brad"*
 - *"Install the surgical-coder soul to my project folder"*
 - *"What categories of personas are available?"*
 - *"Preview what the minimalist persona looks like as CLAUDE.md"*

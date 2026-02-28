@@ -36,7 +36,7 @@ Claude에게:
 **기대**: 검색 결과 목록 (이름, 설명, 카테고리, 다운로드 수)
 
 ### 2-4. get_soul 테스트
-> "Tell me about TomLeeLive/brad"
+> "Tell me about clawsouls/brad"
 
 **기대**: Brad 상세 정보 (v1.2.0, Apache-2.0, work/engineering 등)
 
@@ -46,7 +46,7 @@ Claude에게:
 **기대**: CLAUDE.md 마크다운 미리보기 출력
 
 ### 2-6. install_soul 테스트
-> "Install TomLeeLive/brad to ./test-soul folder"
+> "Install clawsouls/brad to ./test-soul folder"
 
 **기대**:
 - `./test-soul/CLAUDE.md` 파일 생성됨
@@ -92,7 +92,7 @@ code ~/Library/Application\ Support/Claude/claude_desktop_config.json
 **기대**: MCP tool 호출되어 결과 표시
 
 ### 3-4. 설치 테스트
-> "Install TomLeeLive/brad to my Desktop"
+> "Install clawsouls/brad to my Desktop"
 
 **기대**: `~/Desktop/CLAUDE.md` 생성
 
@@ -125,7 +125,7 @@ cat ./test-soul/CLAUDE.md
 ## Test 5: apply_persona (즉시 페르소나 전환)
 
 ### 5-1. 페르소나 적용
-> "Apply the TomLeeLive/brad persona"
+> "Apply the clawsouls/brad persona"
 
 **기대**: Brad의 SOUL.md, IDENTITY.md, STYLE.md, AGENTS.md 내용이 출력되고, "Persona Brad is now active" 메시지
 
