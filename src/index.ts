@@ -528,33 +528,38 @@ server.tool(
   },
   { title: "Soul Rollback — Drift Detection", readOnlyHint: true },
   async ({ current_files, original_files }) => {
-    const drifts: Array<{ file: string; severity: string; detail: string }> = [];
-    const criticalPatterns = [/safety/i, /boundary/i, /never/i, /forbidden/i, /must not/i, /restrict/i, /permission/i];
-    for (const [filename, original] of Object.entries(original_files)) {
-      const current = current_files[filename];
-      if (!current) { drifts.push({ file: filename, severity: "high", detail: "File deleted" }); continue; }
-      if (current === original) continue;
-      const origLines = original.split("\n");
-      const currLines = current.split("\n");
-      const added = currLines.filter(l => !origLines.includes(l)).length;
-      const removed = origLines.filter(l => !currLines.includes(l)).length;
-      const ratio = (added + removed) / Math.max(origLines.length, 1);
-      const removedCritical = origLines.filter(l => !currLines.includes(l) && criticalPatterns.some(p => p.test(l)));
-      const severity = removedCritical.length > 0 || ratio > 0.5 ? "high" : ratio > 0.2 ? "medium" : "low";
-      let detail = `+${added}/-${removed} lines (${(ratio * 100).toFixed(0)}% changed)`;
-      if (removedCritical.length) detail += `\n   ⚠️ ${removedCritical.length} safety-related lines removed`;
-      drifts.push({ file: filename, severity, detail });
+    try {
+      const res = await fetch(`${API_BASE}/soulscan/rollback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current_files, original_files }),
+      });
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const result = await res.json() as {
+        severity: string; drifts: Array<{ file: string; severity: string; detail: string }>;
+      };
+      if (!result.drifts?.length) return { content: [{ type: "text" as const, text: "✅ No drift detected. All files match baseline." }] };
+      const icons: Record<string, string> = { high: "🔴", medium: "🟡", low: "🔵" };
+      const lines = [`# Drift Report`, "", `**Severity**: ${icons[result.severity] || "⚪"} ${result.severity.toUpperCase()}`, ""];
+      for (const d of result.drifts) {
+        lines.push(`${icons[d.severity] || "⚪"} **${d.file}**: ${d.detail}`, "");
+      }
+      if (result.severity === "high") lines.push("⚠️ Consider restoring affected files from git.");
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch {
+      // Basic fallback: simple diff without exposing detection logic
+      const changed: string[] = [];
+      for (const [filename, original] of Object.entries(original_files)) {
+        const current = current_files[filename];
+        if (!current) { changed.push(`🔴 **${filename}**: File deleted`); continue; }
+        if (current !== original) changed.push(`🟡 **${filename}**: Modified`);
+      }
+      for (const f of Object.keys(current_files)) {
+        if (!original_files[f]) changed.push(`🔵 **${f}**: New file added`);
+      }
+      if (!changed.length) return { content: [{ type: "text" as const, text: "✅ No drift detected. All files match baseline." }] };
+      return { content: [{ type: "text" as const, text: `⚠️ API unavailable. Basic comparison:\n\n${changed.join("\n")}` }] };
     }
-    for (const f of Object.keys(current_files)) {
-      if (!original_files[f]) drifts.push({ file: f, severity: "low", detail: "New file added" });
-    }
-    if (!drifts.length) return { content: [{ type: "text" as const, text: "✅ No drift detected. All files match baseline." }] };
-    const icons: Record<string, string> = { high: "🔴", medium: "🟡", low: "🔵" };
-    const maxSev = drifts.some(d => d.severity === "high") ? "high" : drifts.some(d => d.severity === "medium") ? "medium" : "low";
-    const lines = [`# Drift Report`, "", `**Severity**: ${icons[maxSev]} ${maxSev.toUpperCase()}`, ""];
-    for (const d of drifts) lines.push(`${icons[d.severity]} **${d.file}**: ${d.detail}`, "");
-    if (maxSev === "high") lines.push("⚠️ Consider restoring affected files from git.");
-    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   }
 );
 
