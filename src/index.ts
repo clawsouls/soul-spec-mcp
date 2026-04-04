@@ -357,6 +357,273 @@ server.tool(
   }
 );
 
+// --- TF-IDF Engine (ported from clawsouls-mcp) ---
+
+interface TfIdfDocument {
+  file: string;
+  section: string;
+  line: number;
+  text: string;
+  tokens: string[];
+}
+
+interface MemorySearchResult {
+  file: string;
+  section: string;
+  line: number;
+  snippet: string;
+  score: number;
+}
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s가-힣ㄱ-ㅎㅏ-ㅣ\-_.]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 1);
+}
+
+function buildCorpus(files: Record<string, string>): TfIdfDocument[] {
+  const docs: TfIdfDocument[] = [];
+  for (const [file, content] of Object.entries(files)) {
+    const lines = content.split("\n");
+    let currentSection = "(top)";
+    let sectionStart = 0;
+    let sectionLines: string[] = [];
+    const flushSection = () => {
+      if (sectionLines.length === 0) return;
+      const text = sectionLines.join("\n");
+      docs.push({ file, section: currentSection, line: sectionStart + 1, text, tokens: tokenize(text) });
+    };
+    for (let i = 0; i < lines.length; i++) {
+      if (/^#{1,3}\s/.test(lines[i])) {
+        flushSection();
+        currentSection = lines[i].replace(/^#+\s*/, "").trim();
+        sectionStart = i;
+        sectionLines = [lines[i]];
+      } else {
+        sectionLines.push(lines[i]);
+      }
+    }
+    flushSection();
+  }
+  return docs;
+}
+
+function tfidfSearch(query: string, docs: TfIdfDocument[], limit: number = 10): MemorySearchResult[] {
+  const queryTokens = tokenize(query);
+  if (queryTokens.length === 0) return [];
+  const N = docs.length;
+  const df: Record<string, number> = {};
+  for (const doc of docs) {
+    const unique = new Set(doc.tokens);
+    for (const token of unique) df[token] = (df[token] || 0) + 1;
+  }
+  const idf: Record<string, number> = {};
+  for (const token of queryTokens) idf[token] = Math.log((N + 1) / ((df[token] || 0) + 1)) + 1;
+
+  const scored: MemorySearchResult[] = [];
+  for (const doc of docs) {
+    if (doc.tokens.length === 0) continue;
+    const tf: Record<string, number> = {};
+    for (const token of doc.tokens) tf[token] = (tf[token] || 0) + 1;
+    let score = 0;
+    let matched = 0;
+    for (const qt of queryTokens) {
+      if (tf[qt]) {
+        score += (tf[qt] / (tf[qt] + 1.2)) * (idf[qt] || 1);
+        matched++;
+      }
+    }
+    if (matched > 0) score *= (matched / queryTokens.length);
+    const dateMatch = doc.file.match(/(\d{4}-\d{2}-\d{2})/);
+    if (dateMatch) {
+      const daysDiff = (Date.now() - new Date(dateMatch[1]).getTime()) / 86400000;
+      if (daysDiff < 7) score *= 1.3;
+      else if (daysDiff < 30) score *= 1.1;
+    }
+    if (score > 0) {
+      const lines = doc.text.split("\n");
+      const relevantIdx = lines.findIndex(l => queryTokens.some(qt => l.toLowerCase().includes(qt)));
+      const center = relevantIdx >= 0 ? relevantIdx : 0;
+      const snippet = lines.slice(Math.max(0, center - 1), Math.min(lines.length, center + 4)).join("\n");
+      scored.push({ file: doc.file, section: doc.section, line: doc.line + (relevantIdx >= 0 ? relevantIdx : 0), snippet, score });
+    }
+  }
+  return scored.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+async function loadMemoryFiles(memoryDir: string): Promise<Record<string, string>> {
+  const { readdirSync, readFileSync, existsSync } = await import("fs");
+  const { resolve, join } = await import("path");
+  const files: Record<string, string> = {};
+  const dir = resolve(memoryDir);
+  const memoryMd = resolve(dir, "..", "MEMORY.md");
+  if (existsSync(memoryMd)) files["MEMORY.md"] = readFileSync(memoryMd, "utf-8");
+  const cwdMemory = resolve("./MEMORY.md");
+  if (existsSync(cwdMemory) && !files["MEMORY.md"]) files["MEMORY.md"] = readFileSync(cwdMemory, "utf-8");
+  if (existsSync(dir)) {
+    for (const file of readdirSync(dir)) {
+      if (file.endsWith(".md")) files[`memory/${file}`] = readFileSync(join(dir, file), "utf-8");
+    }
+  }
+  return files;
+}
+
+// Tool: soul_scan
+server.tool(
+  "soul_scan",
+  "Run SoulScan safety verification on Soul Spec files. Analyzes persona files against safety patterns and returns a grade (A+ to F).",
+  {
+    files: z.record(z.string(), z.string()).describe('Map of filename to content, e.g. {"SOUL.md": "# My Agent\\n..."}'),
+  },
+  { title: "SoulScan Safety Verification", readOnlyHint: true },
+  async ({ files }) => {
+    try {
+      const res = await fetch(`${API_BASE}/soulscan/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files }),
+      });
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const result = await res.json() as {
+        grade: string; score: number; passed: number; total: number;
+        failures?: Array<{ rule: string; severity: string; message: string; suggestion?: string }>;
+        recommendations?: string[];
+      };
+      const lines = [`# SoulScan Results`, "", `**Grade**: ${result.grade} (${result.score}/100)`, `**Rules passed**: ${result.passed}/${result.total}`, ""];
+      if (result.failures?.length) {
+        lines.push("## Issues Found\n");
+        for (const f of result.failures) {
+          const icon = f.severity === "critical" ? "🔴" : f.severity === "warning" ? "🟡" : "🔵";
+          lines.push(`${icon} **${f.rule}** (${f.severity})`, `   ${f.message}`);
+          if (f.suggestion) lines.push(`   → Fix: ${f.suggestion}`);
+          lines.push("");
+        }
+      }
+      if (result.recommendations?.length) {
+        lines.push("## Recommendations\n");
+        for (const r of result.recommendations) lines.push(`- ${r}`);
+      }
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch {
+      const checks = Object.entries(files).map(([name, content]) => {
+        const issues: string[] = [];
+        if (!content || content.trim().length < 50) issues.push(`${name}: Content too short`);
+        if (name === "SOUL.md" && !content.includes("#")) issues.push(`${name}: Missing headers`);
+        return issues.length ? issues.join("\n") : `${name}: ✅ Basic checks passed`;
+      });
+      return { content: [{ type: "text" as const, text: `⚠️ API unavailable. Basic analysis:\n\n${checks.join("\n")}` }] };
+    }
+  }
+);
+
+// Tool: soul_rollback_check
+server.tool(
+  "soul_rollback_check",
+  "Detect persona drift by comparing current vs original Soul Spec files. Returns drift severity and recommendations.",
+  {
+    current_files: z.record(z.string(), z.string()).describe("Current Soul Spec files as {filename: content}"),
+    original_files: z.record(z.string(), z.string()).describe("Original/baseline Soul Spec files as {filename: content}"),
+  },
+  { title: "Soul Rollback — Drift Detection", readOnlyHint: true },
+  async ({ current_files, original_files }) => {
+    const drifts: Array<{ file: string; severity: string; detail: string }> = [];
+    const criticalPatterns = [/safety/i, /boundary/i, /never/i, /forbidden/i, /must not/i, /restrict/i, /permission/i];
+    for (const [filename, original] of Object.entries(original_files)) {
+      const current = current_files[filename];
+      if (!current) { drifts.push({ file: filename, severity: "high", detail: "File deleted" }); continue; }
+      if (current === original) continue;
+      const origLines = original.split("\n");
+      const currLines = current.split("\n");
+      const added = currLines.filter(l => !origLines.includes(l)).length;
+      const removed = origLines.filter(l => !currLines.includes(l)).length;
+      const ratio = (added + removed) / Math.max(origLines.length, 1);
+      const removedCritical = origLines.filter(l => !currLines.includes(l) && criticalPatterns.some(p => p.test(l)));
+      const severity = removedCritical.length > 0 || ratio > 0.5 ? "high" : ratio > 0.2 ? "medium" : "low";
+      let detail = `+${added}/-${removed} lines (${(ratio * 100).toFixed(0)}% changed)`;
+      if (removedCritical.length) detail += `\n   ⚠️ ${removedCritical.length} safety-related lines removed`;
+      drifts.push({ file: filename, severity, detail });
+    }
+    for (const f of Object.keys(current_files)) {
+      if (!original_files[f]) drifts.push({ file: f, severity: "low", detail: "New file added" });
+    }
+    if (!drifts.length) return { content: [{ type: "text" as const, text: "✅ No drift detected. All files match baseline." }] };
+    const icons: Record<string, string> = { high: "🔴", medium: "🟡", low: "🔵" };
+    const maxSev = drifts.some(d => d.severity === "high") ? "high" : drifts.some(d => d.severity === "medium") ? "medium" : "low";
+    const lines = [`# Drift Report`, "", `**Severity**: ${icons[maxSev]} ${maxSev.toUpperCase()}`, ""];
+    for (const d of drifts) lines.push(`${icons[d.severity]} **${d.file}**: ${d.detail}`, "");
+    if (maxSev === "high") lines.push("⚠️ Consider restoring affected files from git.");
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  }
+);
+
+// Tool: memory_search
+server.tool(
+  "memory_search",
+  "Search agent memory using TF-IDF ranking. Searches MEMORY.md + memory/*.md files.",
+  {
+    query: z.string().describe("Search query (e.g. 'SDK version', '상표 출원')"),
+    memory_dir: z.string().optional().describe("Path to memory directory (default: ./memory)"),
+    limit: z.number().optional().default(10).describe("Max results"),
+  },
+  { title: "Memory Search", readOnlyHint: true },
+  async ({ query, memory_dir, limit }) => {
+    try {
+      const files = await loadMemoryFiles(memory_dir || "./memory");
+      if (!Object.keys(files).length) return { content: [{ type: "text" as const, text: "⚠️ No memory files found." }] };
+      const corpus = buildCorpus(files);
+      const results = tfidfSearch(query, corpus, limit);
+      if (!results.length) return { content: [{ type: "text" as const, text: `No results for "${query}".` }] };
+      const rows = results.map((r, i) => `| ${i + 1} | ${r.file}:${r.line} | ${r.section.slice(0, 40)} | ${r.score.toFixed(2)} |`);
+      return {
+        content: [{
+          type: "text" as const,
+          text: [`# Memory Search: "${query}"`, `**${results.length} results**`, "", "| # | Location | Section | Score |", "|---|----------|---------|-------|", ...rows, "", "→ Use `memory_get` with file + line for full content."].join("\n"),
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: `Error: ${(e as Error).message}` }] };
+    }
+  }
+);
+
+// Tool: memory_get
+server.tool(
+  "memory_get",
+  "Fetch content from a specific memory file. Use after memory_search.",
+  {
+    file: z.string().describe("File path (e.g. 'memory/2026-04-04.md' or 'MEMORY.md')"),
+    line: z.number().optional().describe("Start line number"),
+    lines: z.number().optional().default(30).describe("Lines to return (default: 30)"),
+    memory_dir: z.string().optional().describe("Path to memory directory (default: ./memory)"),
+  },
+  { title: "Memory Get", readOnlyHint: true },
+  async ({ file, line, lines: lineCount, memory_dir }) => {
+    try {
+      const { readFileSync, existsSync } = await import("fs");
+      const { resolve } = await import("path");
+      const dir = resolve(memory_dir || ".");
+      let filePath = file === "MEMORY.md"
+        ? (existsSync(resolve(dir, "..", "MEMORY.md")) ? resolve(dir, "..", "MEMORY.md") : resolve("./MEMORY.md"))
+        : (existsSync(resolve(dir, "..", file)) ? resolve(dir, "..", file) : resolve(".", file));
+      if (!existsSync(filePath)) return { content: [{ type: "text" as const, text: `❌ Not found: ${file}` }] };
+      const content = readFileSync(filePath, "utf-8");
+      const allLines = content.split("\n");
+      const start = Math.max(0, (line || 1) - 1);
+      const end = Math.min(allLines.length, start + (lineCount || 30));
+      return {
+        content: [{
+          type: "text" as const,
+          text: [`# ${file} (lines ${start + 1}–${end})`, "", "```markdown", allLines.slice(start, end).join("\n"), "```", end < allLines.length ? `\n_${allLines.length - end} more lines._` : "\n_End of file._"].join("\n"),
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: `Error: ${(e as Error).message}` }] };
+    }
+  }
+);
+
 // --- Start server ---
 
 async function main() {
