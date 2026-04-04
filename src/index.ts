@@ -139,7 +139,7 @@ server.tool(
       s.scanScore != null ? `- **SoulScan**: ${s.scanScore}/100 (${s.scanGrade})` : "",
       `- **Files**: ${fileList}`,
       "",
-      `Use \`install_soul\` to download and convert to CLAUDE.md.`,
+      `Use \`install_soul\` to download, or \`apply_persona\` to try it in this session.`,
     ].filter(Boolean).join("\n");
 
     return { content: [{ type: "text" as const, text }] };
@@ -149,11 +149,11 @@ server.tool(
 // Tool: install_soul
 server.tool(
   "install_soul",
-  "Download a soul from ClawSouls and generate a CLAUDE.md file for use with Claude Code/Cowork",
+  "Download a soul from ClawSouls and save the original Soul Spec files locally for use with Claude Code/Cowork",
   {
     owner: z.string().describe("Soul owner (e.g., 'TomLeeLive')"),
     name: z.string().describe("Soul name (e.g., 'brad')"),
-    output_dir: z.string().optional().describe("Directory to write CLAUDE.md (default: current directory)"),
+    output_dir: z.string().optional().describe("Directory to save soul files (default: ~/.clawsouls/active/{owner}/{name})"),
   },
   { title: "Install Persona", readOnlyHint: false },
   async ({ owner, name, output_dir }) => {
@@ -167,55 +167,81 @@ server.tool(
       return { content: [{ type: "text" as const, text: `Error: Soul "${owner}/${name}" has no files.` }] };
     }
 
-    const claudeMd = filesToClaudeMd(bundle.files, bundle.manifest);
-
     const m = bundle.manifest;
 
-    // Try to write file, fall back to returning content
-    let writtenPath: string | null = null;
+    // Save original Soul Spec files (not CLAUDE.md conversion)
+    let soulDir: string | null = null;
     try {
-      const { writeFileSync, mkdirSync, existsSync } = await import("fs");
-      const { resolve } = await import("path");
-      const dir = output_dir || ".";
-      const resolvedDir = resolve(dir);
+      const { writeFileSync, mkdirSync, existsSync, symlinkSync, unlinkSync, lstatSync } = await import("fs");
+      const { resolve, join } = await import("path");
+      const os = await import("os");
+
+      const baseDir = output_dir || join(os.homedir(), ".clawsouls", "active", owner, name);
+      const resolvedDir = resolve(baseDir);
       if (!existsSync(resolvedDir)) mkdirSync(resolvedDir, { recursive: true });
-      writtenPath = resolve(`${dir}/CLAUDE.md`);
-      writeFileSync(writtenPath, claudeMd, "utf-8");
+
+      // Write each Soul Spec file
+      for (const [filename, content] of Object.entries(bundle.files)) {
+        writeFileSync(join(resolvedDir, filename), content, "utf-8");
+      }
+
+      // Write soul.json manifest
+      writeFileSync(
+        join(resolvedDir, "soul.json"),
+        JSON.stringify({ ...m, specVersion: "0.5" }, null, 2),
+        "utf-8"
+      );
+
+      soulDir = resolvedDir;
+
+      // Update 'current' symlink
+      const currentLink = join(os.homedir(), ".clawsouls", "active", "current");
+      try {
+        const stat = lstatSync(currentLink);
+        if (stat) unlinkSync(currentLink);
+      } catch { /* doesn't exist yet */ }
+      try {
+        symlinkSync(resolvedDir, currentLink);
+      } catch { /* symlink failed, non-critical */ }
+
     } catch {
-      writtenPath = null;
+      soulDir = null;
     }
 
-    if (writtenPath) {
+    if (soulDir) {
       return {
         content: [{
           type: "text" as const,
           text: [
             `✅ Installed **${m.displayName}** (${owner}/${name} v${m.version})`,
             "",
-            `CLAUDE.md written to: \`${writtenPath}\``,
+            `Soul files saved to: \`${soulDir}/\``,
+            `Active soul symlink: \`~/.clawsouls/active/current\` → \`${soulDir}\``,
             "",
-            "Claude will automatically read this file as project instructions.",
+            `Files: ${Object.keys(bundle.files).join(", ")}, soul.json`,
             "",
-            `Files included: ${Object.keys(bundle.files).join(", ")}`,
+            "Use `/clawsouls:activate` to load this persona into your session.",
           ].join("\n"),
         }],
       };
     }
 
-    // Fallback: return content for Claude to save via its own tools
+    // Fallback: return file contents for Claude to save via its own tools
+    const fileList = Object.entries(bundle.files)
+      .map(([fname, content]) => `### ${fname}\n\`\`\`markdown\n${content}\n\`\`\``)
+      .join("\n\n");
+
     return {
       content: [{
         type: "text" as const,
         text: [
           `✅ Downloaded **${m.displayName}** (${owner}/${name} v${m.version})`,
           "",
-          "I couldn't write the file directly. Please save the following as `CLAUDE.md` in your desired location:",
+          "I couldn't write files directly. Please save these to `~/.clawsouls/active/" + owner + "/" + name + "/`:",
           "",
-          "```markdown",
-          claudeMd,
-          "```",
+          fileList,
           "",
-          `Files included: ${Object.keys(bundle.files).join(", ")}`,
+          `Total files: ${Object.keys(bundle.files).length}`,
         ].join("\n"),
       }],
     };
