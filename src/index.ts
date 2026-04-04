@@ -558,37 +558,140 @@ server.tool(
   }
 );
 
+// --- Ollama Embedding Support (auto-detected) ---
+
+const OLLAMA_BASE = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
+const OLLAMA_MODEL = process.env.OLLAMA_EMBED_MODEL || "bge-m3";
+
+let ollamaAvailable: boolean | null = null;
+
+async function checkOllama(): Promise<boolean> {
+  if (ollamaAvailable !== null) return ollamaAvailable;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json() as { models?: Array<{ name: string }> };
+      ollamaAvailable = data.models?.some(m => m.name.startsWith(OLLAMA_MODEL)) ?? false;
+      if (!ollamaAvailable) {
+        // Model exists but may be named differently (e.g. bge-m3:latest)
+        ollamaAvailable = data.models?.some(m => m.name.includes("bge-m3") || m.name.includes("nomic-embed") || m.name.includes("mxbai-embed")) ?? false;
+      }
+    } else {
+      ollamaAvailable = false;
+    }
+  } catch {
+    ollamaAvailable = false;
+  }
+  return ollamaAvailable;
+}
+
+async function embedText(text: string): Promise<number[]> {
+  const res = await fetch(`${OLLAMA_BASE}/api/embeddings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: OLLAMA_MODEL, prompt: text }),
+  });
+  if (!res.ok) throw new Error(`Ollama embedding error ${res.status}`);
+  const data = await res.json() as { embedding?: number[] };
+  if (!Array.isArray(data.embedding)) throw new Error("No embedding in response");
+  // L2 normalize
+  const mag = Math.sqrt(data.embedding.reduce((s, v) => s + v * v, 0));
+  return mag > 1e-10 ? data.embedding.map(v => v / mag) : data.embedding;
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0;
+  for (let i = 0; i < a.length && i < b.length; i++) dot += a[i] * b[i];
+  return dot; // already normalized
+}
+
+async function hybridSearch(
+  query: string, corpus: TfIdfDocument[], limit: number
+): Promise<{ results: MemorySearchResult[]; mode: "hybrid" | "fts" }> {
+  const hasOllama = await checkOllama();
+  const tfidfResults = tfidfSearch(query, corpus, Math.max(limit * 2, 30));
+
+  if (!hasOllama || tfidfResults.length === 0) {
+    return { results: tfidfResults.slice(0, limit), mode: "fts" };
+  }
+
+  try {
+    const queryEmbedding = await embedText(query);
+
+    // Embed top TF-IDF candidates (batch for efficiency, max 20)
+    const candidates = tfidfResults.slice(0, 20);
+    const embeddings = await Promise.all(
+      candidates.map(r => embedText(r.snippet.slice(0, 500)))
+    );
+
+    // Normalize scores to 0-1 range
+    const maxTfidf = candidates[0]?.score || 1;
+
+    // Combine: 0.4 * tfidf_norm + 0.6 * semantic
+    const combined = candidates.map((r, i) => ({
+      ...r,
+      score: 0.4 * (r.score / maxTfidf) + 0.6 * Math.max(0, cosineSimilarity(queryEmbedding, embeddings[i])),
+    }));
+
+    combined.sort((a, b) => b.score - a.score);
+    return { results: combined.slice(0, limit), mode: "hybrid" };
+  } catch {
+    // Ollama failed mid-search, fall back to TF-IDF
+    ollamaAvailable = null; // reset for next check
+    return { results: tfidfResults.slice(0, limit), mode: "fts" };
+  }
+}
+
 // Tool: memory_search
 server.tool(
   "memory_search",
-  "Search agent memory using TF-IDF ranking. Searches MEMORY.md + memory/*.md files.",
+  "Search agent memory using hybrid TF-IDF + semantic ranking (auto-detects Ollama for embeddings). Searches MEMORY.md + memory/*.md files.",
   {
     query: z.string().describe("Search query (e.g. 'SDK version', '상표 출원')"),
     memory_dir: z.string().optional().describe("Path to memory directory (default: ./memory)"),
     limit: z.number().optional().default(10).describe("Max results"),
     enhanced: z.boolean().optional().default(false).describe("Return full snippets with score visualization (more tokens)"),
+    mode: z.enum(["auto", "hybrid", "fts"]).optional().default("auto").describe("Search mode: auto (detect Ollama), hybrid (force semantic), fts (TF-IDF only)"),
   },
   { title: "Memory Search", readOnlyHint: true },
-  async ({ query, memory_dir, limit, enhanced }) => {
+  async ({ query, memory_dir, limit, enhanced, mode: searchMode }) => {
     try {
       const files = await loadMemoryFiles(memory_dir || "./memory");
       if (!Object.keys(files).length) return { content: [{ type: "text" as const, text: "⚠️ No memory files found." }] };
       const corpus = buildCorpus(files);
-      const results = tfidfSearch(query, corpus, limit);
+
+      let results: MemorySearchResult[];
+      let actualMode: string;
+
+      if (searchMode === "fts") {
+        results = tfidfSearch(query, corpus, limit);
+        actualMode = "fts";
+      } else {
+        const hybrid = await hybridSearch(query, corpus, limit);
+        results = hybrid.results;
+        actualMode = hybrid.mode;
+      }
+
       if (!results.length) return { content: [{ type: "text" as const, text: `No results for "${query}".` }] };
+
+      const modeLabel = actualMode === "hybrid" ? "🧠 hybrid (TF-IDF + bge-m3)" : "📝 TF-IDF";
+
       if (enhanced) {
         const maxScore = results[0].score;
         const sections = results.map((r, i) => {
           const bar = "█".repeat(Math.round((r.score / maxScore) * 10));
           return [`### ${i + 1}. ${r.file}:${r.line} — ${r.section}`, `Score: ${r.score.toFixed(2)} ${bar}`, "", "```", r.snippet, "```"].join("\n");
         });
-        return { content: [{ type: "text" as const, text: [`# Memory Search: "${query}" (enhanced)`, `**${results.length} results**`, "", ...sections].join("\n\n") }] };
+        return { content: [{ type: "text" as const, text: [`# Memory Search: "${query}" (enhanced)`, `**${results.length} results** | Mode: ${modeLabel}`, "", ...sections].join("\n\n") }] };
       }
       const rows = results.map((r, i) => `| ${i + 1} | ${r.file}:${r.line} | ${r.section.slice(0, 40)} | ${r.score.toFixed(2)} |`);
       return {
         content: [{
           type: "text" as const,
-          text: [`# Memory Search: "${query}"`, `**${results.length} results**`, "", "| # | Location | Section | Score |", "|---|----------|---------|-------|", ...rows, "", "→ Use `memory_get` for full content, or `enhanced=true` for snippets."].join("\n"),
+          text: [`# Memory Search: "${query}"`, `**${results.length} results** | Mode: ${modeLabel}`, "", "| # | Location | Section | Score |", "|---|----------|---------|-------|", ...rows, "", "→ Use `memory_get` for full content, or `enhanced=true` for snippets."].join("\n"),
         }],
       };
     } catch (e) {
