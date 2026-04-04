@@ -566,20 +566,29 @@ server.tool(
     query: z.string().describe("Search query (e.g. 'SDK version', '상표 출원')"),
     memory_dir: z.string().optional().describe("Path to memory directory (default: ./memory)"),
     limit: z.number().optional().default(10).describe("Max results"),
+    enhanced: z.boolean().optional().default(false).describe("Return full snippets with score visualization (more tokens)"),
   },
   { title: "Memory Search", readOnlyHint: true },
-  async ({ query, memory_dir, limit }) => {
+  async ({ query, memory_dir, limit, enhanced }) => {
     try {
       const files = await loadMemoryFiles(memory_dir || "./memory");
       if (!Object.keys(files).length) return { content: [{ type: "text" as const, text: "⚠️ No memory files found." }] };
       const corpus = buildCorpus(files);
       const results = tfidfSearch(query, corpus, limit);
       if (!results.length) return { content: [{ type: "text" as const, text: `No results for "${query}".` }] };
+      if (enhanced) {
+        const maxScore = results[0].score;
+        const sections = results.map((r, i) => {
+          const bar = "█".repeat(Math.round((r.score / maxScore) * 10));
+          return [`### ${i + 1}. ${r.file}:${r.line} — ${r.section}`, `Score: ${r.score.toFixed(2)} ${bar}`, "", "```", r.snippet, "```"].join("\n");
+        });
+        return { content: [{ type: "text" as const, text: [`# Memory Search: "${query}" (enhanced)`, `**${results.length} results**`, "", ...sections].join("\n\n") }] };
+      }
       const rows = results.map((r, i) => `| ${i + 1} | ${r.file}:${r.line} | ${r.section.slice(0, 40)} | ${r.score.toFixed(2)} |`);
       return {
         content: [{
           type: "text" as const,
-          text: [`# Memory Search: "${query}"`, `**${results.length} results**`, "", "| # | Location | Section | Score |", "|---|----------|---------|-------|", ...rows, "", "→ Use `memory_get` with file + line for full content."].join("\n"),
+          text: [`# Memory Search: "${query}"`, `**${results.length} results**`, "", "| # | Location | Section | Score |", "|---|----------|---------|-------|", ...rows, "", "→ Use `memory_get` for full content, or `enhanced=true` for snippets."].join("\n"),
         }],
       };
     } catch (e) {
@@ -620,6 +629,128 @@ server.tool(
       };
     } catch (e) {
       return { content: [{ type: "text" as const, text: `Error: ${(e as Error).message}` }] };
+    }
+  }
+);
+
+// Tool: memory_status
+server.tool(
+  "memory_status",
+  "Show status of agent memory files — list files, sizes, last modified dates, and git status.",
+  {
+    memory_dir: z.string().optional().describe("Path to memory directory (default: ./memory)"),
+  },
+  { title: "Memory Status", readOnlyHint: true },
+  async ({ memory_dir }) => {
+    try {
+      const { readdirSync, statSync, existsSync } = await import("fs");
+      const { resolve, join } = await import("path");
+      const { execSync } = await import("child_process");
+      const dir = resolve(memory_dir || "./memory");
+      const files: Array<{ name: string; size: number; modified: string }> = [];
+      const memoryMd = resolve("./MEMORY.md");
+      if (existsSync(memoryMd)) {
+        const stat = statSync(memoryMd);
+        files.push({ name: "MEMORY.md", size: stat.size, modified: stat.mtime.toISOString().split("T")[0] });
+      }
+      if (existsSync(dir)) {
+        for (const file of readdirSync(dir).sort()) {
+          if (!file.endsWith(".md")) continue;
+          const stat = statSync(join(dir, file));
+          files.push({ name: `memory/${file}`, size: stat.size, modified: stat.mtime.toISOString().split("T")[0] });
+        }
+      }
+      let gitStatus = "unknown";
+      try {
+        const status = execSync("git status --porcelain MEMORY.md memory/", { encoding: "utf-8", timeout: 5000 }).trim();
+        gitStatus = status || "clean (all committed)";
+      } catch { gitStatus = "not a git repository"; }
+      const rows = files.map(f => `| ${f.name} | ${(f.size / 1024).toFixed(1)} KB | ${f.modified} |`);
+      return {
+        content: [{
+          type: "text" as const,
+          text: [`# Memory Status`, "", `**Files**: ${files.length} | **Size**: ${(files.reduce((a, f) => a + f.size, 0) / 1024).toFixed(1)} KB`, "", "| File | Size | Modified |", "|------|------|----------|", ...rows, "", "## Git Status", "```", gitStatus, "```"].join("\n"),
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: `Error: ${(e as Error).message}` }] };
+    }
+  }
+);
+
+// Tool: memory_sync
+server.tool(
+  "memory_sync",
+  "Sync agent memory files with a remote Git repository for multi-agent memory sharing. Actions: init, push, pull, status.",
+  {
+    action: z.enum(["init", "push", "pull", "status"]).describe("init: setup remote; push: commit & push; pull: fetch & merge; status: show sync state"),
+    repo_url: z.string().optional().describe("Remote Git repo URL (required for init)"),
+    memory_dir: z.string().optional().describe("Path to memory directory (default: ./memory)"),
+    agent_name: z.string().optional().describe("Agent name for commits (default: 'agent')"),
+    message: z.string().optional().describe("Custom commit message (for push)"),
+  },
+  { title: "Memory Sync", readOnlyHint: false },
+  async ({ action, repo_url, memory_dir, agent_name, message }) => {
+    const { execSync } = await import("child_process");
+    const { existsSync, mkdirSync, writeFileSync } = await import("fs");
+    const { resolve } = await import("path");
+    const dir = resolve(memory_dir || "./memory");
+    const name = agent_name || "agent";
+    function git(cmd: string, cwd?: string): string {
+      try { return execSync(`git ${cmd}`, { encoding: "utf-8", timeout: 30000, cwd: cwd || dir }).trim(); }
+      catch (e) { throw new Error(`git ${cmd} failed: ${(e as Error).message}`); }
+    }
+    try {
+      if (action === "init") {
+        if (!repo_url) return { content: [{ type: "text" as const, text: "❌ `repo_url` required for init." }] };
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        if (!existsSync(resolve(dir, ".git"))) {
+          git("init", dir);
+          git(`remote add origin ${repo_url}`, dir);
+          writeFileSync(resolve(dir, "README.md"), `# Agent Memory\n\nManaged by [ClawSouls](https://clawsouls.ai).\n`, "utf-8");
+          writeFileSync(resolve(dir, ".gitignore"), `*.tmp\n*.lock\n.DS_Store\n`, "utf-8");
+          git("add -A", dir);
+          git(`commit -m "Memory initialized by ${name}"`, dir);
+          try { git("push -u origin main", dir); } catch { try { git("branch -M main", dir); git("push -u origin main", dir); } catch {} }
+          return { content: [{ type: "text" as const, text: `✅ Memory repo initialized\n- Local: \`${dir}\`\n- Remote: \`${repo_url}\`` }] };
+        }
+        try { git(`remote set-url origin ${repo_url}`, dir); } catch { git(`remote add origin ${repo_url}`, dir); }
+        return { content: [{ type: "text" as const, text: `✅ Remote updated to \`${repo_url}\`` }] };
+      }
+      if (action === "push") {
+        if (!existsSync(resolve(dir, ".git"))) return { content: [{ type: "text" as const, text: "❌ Not a git repo. Run init first." }] };
+        git("add -A", dir);
+        const status = git("status --porcelain", dir);
+        if (!status) return { content: [{ type: "text" as const, text: "✅ Nothing to push — already in sync." }] };
+        const msg = message || `Memory sync by ${name} — ${new Date().toISOString().split("T")[0]}`;
+        git(`commit -m "${msg}"`, dir);
+        git("push", dir);
+        return { content: [{ type: "text" as const, text: `✅ Pushed ${status.split("\n").length} change(s)\n\`\`\`\n${status}\n\`\`\`` }] };
+      }
+      if (action === "pull") {
+        if (!existsSync(resolve(dir, ".git"))) {
+          if (repo_url) { git(`clone ${repo_url} ${dir}`, resolve(dir, "..")); return { content: [{ type: "text" as const, text: `✅ Cloned from \`${repo_url}\`` }] }; }
+          return { content: [{ type: "text" as const, text: "❌ Not a git repo. Run init first." }] };
+        }
+        const before = git("rev-parse HEAD", dir);
+        git("pull --rebase", dir);
+        const after = git("rev-parse HEAD", dir);
+        if (before === after) return { content: [{ type: "text" as const, text: "✅ Already up to date." }] };
+        const log = git(`log --oneline ${before}..${after}`, dir);
+        return { content: [{ type: "text" as const, text: `✅ Pulled:\n\`\`\`\n${log}\n\`\`\`` }] };
+      }
+      if (action === "status") {
+        if (!existsSync(resolve(dir, ".git"))) return { content: [{ type: "text" as const, text: "❌ Not a memory repo." }] };
+        let remote = "none"; try { remote = git("remote get-url origin", dir); } catch {}
+        const branch = git("branch --show-current", dir);
+        const status = git("status --porcelain", dir) || "(clean)";
+        const last = git("log -1 --format=%h\\ %s\\ (%cr)", dir);
+        let sync = "unknown"; try { git("fetch --dry-run", dir); const a = git("rev-list --count origin/main..HEAD", dir); const b = git("rev-list --count HEAD..origin/main", dir); sync = `↑${a} ↓${b}`; } catch { sync = "offline"; }
+        return { content: [{ type: "text" as const, text: [`# Memory Sync Status`, `- Remote: \`${remote}\``, `- Branch: \`${branch}\``, `- Last: ${last}`, `- Sync: ${sync}`, "", "```", status, "```"].join("\n") }] };
+      }
+      return { content: [{ type: "text" as const, text: `❌ Unknown action: ${action}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: `❌ Error: ${(e as Error).message}` }] };
     }
   }
 );
